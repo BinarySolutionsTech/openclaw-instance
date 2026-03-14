@@ -29,7 +29,7 @@ concurrency:
 
 env:
   DO_REGISTRY: registry.digitalocean.com
-  DO_REGISTRY_NAME: leapclue
+  DO_REGISTRY_NAME: leapclue-container-registry
   IMAGE_NAME: openclaw-instance
 
 jobs:
