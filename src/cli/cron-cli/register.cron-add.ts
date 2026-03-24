@@ -73,7 +73,10 @@ export function registerCronAddCommand(cron: Command) {
       .option("--session <target>", "Session target (main|isolated)")
       .option("--session-key <key>", "Session key for job routing (e.g. agent:my-agent:my-session)")
       .option("--wake <mode>", "Wake mode (now|next-heartbeat)", "now")
-      .option("--at <when>", "Run once at time (ISO) or +duration (e.g. 20m)")
+      .option(
+        "--at <when>",
+        "Run once at time (ISO with offset, or +duration). Use --tz for offset-less datetimes",
+      )
       .option("--every <duration>", "Run every duration (e.g. 10m, 1h)")
       .option("--cron <expr>", "Cron expression (5-field or 6-field with seconds)")
       .option("--tz <iana>", "Timezone for cron expressions (IANA)", "")
@@ -119,7 +122,9 @@ export function registerCronAddCommand(cron: Command) {
               throw new Error("--stagger/--exact are only valid with --cron");
             }
             if (at) {
-              const atIso = parseAt(at);
+              const tzRaw =
+                typeof opts.tz === "string" && opts.tz.trim() ? opts.tz.trim() : undefined;
+              const atIso = parseAt(at, tzRaw);
               if (!atIso) {
                 throw new Error("Invalid --at; use ISO time or duration like 20m");
               }
@@ -194,8 +199,13 @@ export function registerCronAddCommand(cron: Command) {
           const inferredSessionTarget = payload.kind === "agentTurn" ? "isolated" : "main";
           const sessionTarget =
             sessionSource === "cli" ? sessionTargetRaw || "" : inferredSessionTarget;
-          if (sessionTarget !== "main" && sessionTarget !== "isolated") {
-            throw new Error("--session must be main or isolated");
+          const isCustomSessionTarget =
+            sessionTarget.toLowerCase().startsWith("session:") &&
+            sessionTarget.slice(8).trim().length > 0;
+          const isIsolatedLikeSessionTarget =
+            sessionTarget === "isolated" || sessionTarget === "current" || isCustomSessionTarget;
+          if (sessionTarget !== "main" && !isIsolatedLikeSessionTarget) {
+            throw new Error("--session must be main, isolated, current, or session:<id>");
           }
 
           if (opts.deleteAfterRun && opts.keepAfterRun) {
@@ -205,14 +215,14 @@ export function registerCronAddCommand(cron: Command) {
           if (sessionTarget === "main" && payload.kind !== "systemEvent") {
             throw new Error("Main jobs require --system-event (systemEvent).");
           }
-          if (sessionTarget === "isolated" && payload.kind !== "agentTurn") {
-            throw new Error("Isolated jobs require --message (agentTurn).");
+          if (isIsolatedLikeSessionTarget && payload.kind !== "agentTurn") {
+            throw new Error("Isolated/current/custom-session jobs require --message (agentTurn).");
           }
           if (
             (opts.announce || typeof opts.deliver === "boolean") &&
-            (sessionTarget !== "isolated" || payload.kind !== "agentTurn")
+            (!isIsolatedLikeSessionTarget || payload.kind !== "agentTurn")
           ) {
-            throw new Error("--announce/--no-deliver require --session isolated.");
+            throw new Error("--announce/--no-deliver require a non-main agentTurn session target.");
           }
 
           const accountId =
@@ -220,12 +230,12 @@ export function registerCronAddCommand(cron: Command) {
               ? opts.account.trim()
               : undefined;
 
-          if (accountId && (sessionTarget !== "isolated" || payload.kind !== "agentTurn")) {
-            throw new Error("--account requires an isolated agentTurn job with delivery.");
+          if (accountId && (!isIsolatedLikeSessionTarget || payload.kind !== "agentTurn")) {
+            throw new Error("--account requires a non-main agentTurn job with delivery.");
           }
 
           const deliveryMode =
-            sessionTarget === "isolated" && payload.kind === "agentTurn"
+            isIsolatedLikeSessionTarget && payload.kind === "agentTurn"
               ? hasAnnounce
                 ? "announce"
                 : hasNoDeliver
