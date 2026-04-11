@@ -4,13 +4,23 @@ import { resolveCronStaggerMs } from "../../cron/stagger.js";
 import type { CronJob, CronSchedule } from "../../cron/types.js";
 import { danger } from "../../globals.js";
 import { formatDurationHuman } from "../../infra/format-time/format-duration.ts";
+import {
+  isOffsetlessIsoDateTime,
+  parseOffsetlessIsoDateTimeInTimeZone,
+} from "../../infra/format-time/parse-offsetless-zoned-datetime.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
+import { normalizeLowercaseStringOrEmpty } from "../../shared/string-coerce.js";
 import { colorize, isRich, theme } from "../../terminal/theme.js";
 import type { GatewayRpcOpts } from "../gateway-rpc.js";
 import { callGatewayFromCli } from "../gateway-rpc.js";
 
-export const getCronChannelOptions = () =>
-  ["last", ...listChannelPlugins().map((plugin) => plugin.id)].join("|");
+export const getCronChannelOptions = () => {
+  // Keep help truthful even before the plugin registry is bootstrapped.
+  const pluginIds = listChannelPlugins()
+    .map((plugin) => plugin.id)
+    .filter(Boolean);
+  return pluginIds.length > 0 ? ["last", ...pluginIds].join("|") : "last|<channel-id>";
+};
 
 export function printCronJson(value: unknown) {
   defaultRuntime.writeJson(value);
@@ -58,7 +68,7 @@ export function parseDurationMs(input: string): number | null {
   if (!Number.isFinite(n) || n <= 0) {
     return null;
   }
-  const unit = (match[2] ?? "").toLowerCase();
+  const unit = normalizeLowercaseStringOrEmpty(match[2] ?? "");
   const factor =
     unit === "ms"
       ? 1
@@ -89,8 +99,6 @@ export function parseCronStaggerMs(params: {
   return parsed;
 }
 
-const OFFSETLESS_ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/;
-
 /**
  * Parse a one-shot `--at` value into an ISO string (UTC).
  *
@@ -106,11 +114,8 @@ export function parseAt(input: string, tz?: string): string | null {
 
   // If a timezone is provided and the input looks like an offset-less ISO datetime,
   // resolve it in the given IANA timezone so users get the time they expect.
-  if (tz && OFFSETLESS_ISO_DATETIME_RE.test(raw)) {
-    const resolved = parseOffsetlessAtInTimezone(raw, tz);
-    if (resolved) {
-      return resolved;
-    }
+  if (tz && isOffsetlessIsoDateTime(raw)) {
+    return parseOffsetlessIsoDateTimeInTimeZone(raw, tz);
   }
 
   const absolute = parseAbsoluteTimeMs(raw);
@@ -122,62 +127,6 @@ export function parseAt(input: string, tz?: string): string | null {
     return new Date(Date.now() + dur).toISOString();
   }
   return null;
-}
-
-function parseOffsetlessAtInTimezone(raw: string, tz: string): string | null {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
-
-    const naiveMs = new Date(`${raw}Z`).getTime();
-    if (Number.isNaN(naiveMs)) {
-      return null;
-    }
-
-    // Re-check the offset at the first candidate instant so DST boundaries
-    // land on the intended wall-clock time instead of drifting by one hour.
-    const firstOffsetMs = getTimezoneOffsetMs(naiveMs, tz);
-    const candidateMs = naiveMs - firstOffsetMs;
-    const finalOffsetMs = getTimezoneOffsetMs(candidateMs, tz);
-    return new Date(naiveMs - finalOffsetMs).toISOString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Get the UTC offset in milliseconds for a given IANA timezone at a given UTC instant.
- * Positive means ahead of UTC (e.g. +3600000 for CET).
- */
-function getTimezoneOffsetMs(utcMs: number, tz: string): number {
-  const d = new Date(utcMs);
-  // Format parts in the target timezone
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(d);
-
-  const get = (type: string) => {
-    const part = parts.find((p) => p.type === type);
-    return Number.parseInt(part?.value ?? "0", 10);
-  };
-
-  // Reconstruct the local time as if it were UTC
-  const localAsUtc = Date.UTC(
-    get("year"),
-    get("month") - 1,
-    get("day"),
-    get("hour"),
-    get("minute"),
-    get("second"),
-  );
-
-  return localAsUtc - utcMs;
 }
 
 const CRON_ID_PAD = 36;
